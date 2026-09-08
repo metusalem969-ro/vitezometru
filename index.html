@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Vitezometru</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icon-192.png">
+<style>
+  :root{
+    --ink:#ffa31a;          /* chihlimbar de bord: lizibil ziua, nu strica vederea de noapte */
+    --ink-dim:#5a4520;
+    --over:#ff2d2d;
+    --chrome:#3a3a3a;
+    --bg:#000;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;overflow:hidden;background:var(--bg);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    color:var(--ink);
+    -webkit-user-select:none;user-select:none;
+    -webkit-text-size-adjust:100%}
+
+  #stage{position:fixed;inset:0;display:flex;flex-direction:column;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    transition:color .18s linear}
+  #stage.mirror #readout,#stage.mirror #foot{transform:scaleX(-1)}
+  #stage.over{color:var(--over)}
+
+  /* numarul: SVG, ca sa fie identic de mare pe orice telefon */
+  #readout{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;padding:0 4vw}
+  #readout svg{width:100%;height:100%;display:block}
+  #num{font-weight:800;font-size:100px;letter-spacing:-4px;fill:currentColor;
+    font-variant-numeric:tabular-nums}
+  #stage.stale #readout{opacity:.28}
+
+  #foot{display:flex;align-items:flex-end;justify-content:space-between;
+    padding:0 6vw 4vh;gap:16px;font-size:15px;letter-spacing:.4px}
+  #unit{font-weight:700;font-size:clamp(18px,5vw,26px);color:currentColor}
+  #note{color:var(--chrome);font-size:13px;line-height:1.5;text-align:right;max-width:52%}
+  #limit{font-weight:700;font-size:clamp(18px,5vw,26px);color:currentColor;
+    border:3px solid currentColor;border-radius:50%;
+    width:2.6em;height:2.6em;display:flex;align-items:center;justify-content:center;
+    font-size:clamp(14px,3.6vw,20px)}
+  #limit.unset{color:var(--chrome);border-color:var(--chrome)}
+
+  /* panoul de comenzi: ascuns pana atingi ecranul */
+  #panel{position:fixed;inset:auto 0 0 0;background:#0d0d0d;border-top:1px solid #1c1c1c;
+    padding:18px 18px calc(18px + env(safe-area-inset-bottom));
+    display:grid;grid-template-columns:repeat(2,1fr);gap:10px;
+    transform:translateY(110%);transition:transform .22s ease;z-index:5}
+  #panel.open{transform:none}
+  button{font:inherit;font-size:15px;font-weight:600;color:#d8d8d8;background:#191919;
+    border:1px solid #2a2a2a;border-radius:10px;padding:14px 10px;cursor:pointer}
+  button:active{background:#242424}
+  button.wide{grid-column:1/-1}
+  button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+  #start{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    background:var(--bg);z-index:10;flex-direction:column;gap:20px;padding:32px;text-align:center}
+  #start p{color:#8a8a8a;font-size:15px;line-height:1.6;max-width:30ch}
+  #start button{background:var(--ink);color:#000;border:0;font-size:18px;padding:18px 34px;border-radius:12px}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<div id="stage" class="stale">
+  <div id="readout">
+    <svg id="svg" viewBox="0 0 180 120" preserveAspectRatio="xMidYMid meet">
+      <text id="num" x="90" y="98" text-anchor="middle">--</text>
+    </svg>
+  </div>
+  <div id="foot">
+    <span id="unit">km/h</span>
+    <div style="display:flex;align-items:center;gap:14px">
+      <div id="limit" class="unset">--</div>
+      <span id="note">atinge ecranul<br>pentru comenzi</span>
+    </div>
+  </div>
+</div>
+
+<div id="panel">
+  <button id="bUnit">Treci pe mph</button>
+  <button id="bMirror">Oglindă (HUD)</button>
+  <button id="bLimitDown">Limită −10</button>
+  <button id="bLimitUp">Limită +10</button>
+  <button id="bFull" class="wide">Ecran complet</button>
+</div>
+
+<div id="start">
+  <p>Vitezometru GPS. Nu are nevoie de internet — doar de semnal de la sateliți. Ține telefonul cu ecranul spre cer, lângă parbriz.</p>
+  <button id="go">Pornește</button>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var stage=document.getElementById("stage"), svg=document.getElementById("svg"),
+      num=document.getElementById("num"), unitEl=document.getElementById("unit"),
+      limitEl=document.getElementById("limit"), noteEl=document.getElementById("note"),
+      panel=document.getElementById("panel"), start=document.getElementById("start");
+
+  var mph=false, mirror=false, limit=0, wakeLock=null, watchId=null;
+  var lastFix=0, lastPos=null, kmh=0, hideTimer=null, wasOver=false;
+
+  // ---- afisare ----
+  function render(){
+    var stale = (Date.now()-lastFix) > 4000;
+    var v = mph ? kmh*0.621371 : kmh;
+    var shown = (lastFix===0||stale) ? "--" : String(Math.round(v));
+    // latimea viewBox creste cu numarul de cifre => cifrele raman mereu la fel de inalte
+    var n = shown.length;
+    var w = 62*n + 18;
+    svg.setAttribute("viewBox","0 0 "+w+" 120");
+    num.setAttribute("x", w/2);
+    num.textContent = shown;
+    stage.classList.toggle("stale", stale || lastFix===0);
+
+    var over = !stale && limit>0 && Math.round(v) > limit;
+    stage.classList.toggle("over", over);
+    if(over && !wasOver && navigator.vibrate) navigator.vibrate([90,60,90]);
+    wasOver = over;
+
+    unitEl.textContent = mph ? "mph" : "km/h";
+    limitEl.textContent = limit>0 ? limit : "--";
+    limitEl.classList.toggle("unset", limit===0);
+  }
+
+  // ---- GPS ----
+  function onPos(p){
+    var c=p.coords, v=null;
+    if(c.speed!==null && !isNaN(c.speed) && c.speed>=0){
+      v = c.speed*3.6;                       // telefonul ne da viteza direct (Doppler)
+    }else if(lastPos){                       // altfel o calculam din doua pozitii
+      var dt=(p.timestamp-lastPos.timestamp)/1000;
+      if(dt>0.3) v = dist(lastPos.coords,c)/dt*3.6;
+    }
+    lastPos=p;
+    if(v===null) return;
+    if(c.accuracy>60) return;                // fix prea slab, ignoram
+    if(v<2.5) v=0;                           // zgomotul GPS in stationare
+    kmh = v;
+    lastFix = Date.now();
+    noteEl.innerHTML = "precizie ±"+Math.round(c.accuracy)+" m";
+    render();
+  }
+  function onErr(e){
+    noteEl.innerHTML = e.code===1 ? "acces la locație refuzat" : "fără semnal GPS";
+    render();
+  }
+  function dist(a,b){
+    var R=6371000, r=Math.PI/180;
+    var dLa=(b.latitude-a.latitude)*r, dLo=(b.longitude-a.longitude)*r;
+    var h=Math.sin(dLa/2)*Math.sin(dLa/2)+Math.cos(a.latitude*r)*Math.cos(b.latitude*r)*
+          Math.sin(dLo/2)*Math.sin(dLo/2);
+    return 2*R*Math.asin(Math.min(1,Math.sqrt(h)));
+  }
+
+  // ---- ecranul nu trebuie sa se stinga ----
+  async function keepAwake(){
+    try{
+      if("wakeLock" in navigator){
+        wakeLock = await navigator.wakeLock.request("screen");
+        wakeLock.addEventListener("release", function(){ wakeLock=null; });
+      }
+    }catch(e){}
+  }
+  document.addEventListener("visibilitychange", function(){
+    if(document.visibilityState==="visible" && !wakeLock) keepAwake();
+  });
+
+  // ---- comenzi ----
+  function showPanel(){
+    panel.classList.add("open");
+    clearTimeout(hideTimer);
+    hideTimer=setTimeout(function(){ panel.classList.remove("open"); }, 6000);
+  }
+  document.getElementById("stage").addEventListener("click", showPanel);
+  panel.addEventListener("click", showPanel);
+
+  document.getElementById("bUnit").addEventListener("click", function(){
+    mph=!mph; this.textContent = mph ? "Treci pe km/h" : "Treci pe mph"; render();
+  });
+  document.getElementById("bMirror").addEventListener("click", function(){
+    mirror=!mirror; stage.classList.toggle("mirror", mirror);
+  });
+  document.getElementById("bLimitUp").addEventListener("click", function(){
+    limit=Math.min(200, limit+10); render();
+  });
+  document.getElementById("bLimitDown").addEventListener("click", function(){
+    limit=Math.max(0, limit-10); render();
+  });
+  document.getElementById("bFull").addEventListener("click", function(){
+    var el=document.documentElement;
+    if(!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(function(){});
+    else if(document.exitFullscreen) document.exitFullscreen();
+  });
+
+  document.getElementById("go").addEventListener("click", function(){
+    start.remove();
+    keepAwake();
+    if(!window.isSecureContext){
+      noteEl.innerHTML = "deschide pagina prin https,<br>nu direct din fișier";
+      return;
+    }
+    if(!navigator.geolocation){ noteEl.textContent="telefonul nu oferă locație"; return; }
+    watchId = navigator.geolocation.watchPosition(onPos, onErr, {
+      enableHighAccuracy:true, maximumAge:0, timeout:15000
+    });
+    setInterval(render, 500);   // marcheaza datele ca invechite daca GPS-ul tace
+    render();
+  });
+
+  // dupa prima incarcare, pagina ramane disponibila si complet fara internet
+  if("serviceWorker" in navigator){
+    window.addEventListener("load", function(){
+      navigator.serviceWorker.register("./sw.js").catch(function(){});
+    });
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
