@@ -127,14 +127,23 @@
   }
 
   var mph=false, mirror=false, limit=0, wakeLock=null, watchId=null;
-  var lastFix=0, lastPos=null, kmh=0, hideTimer=null, wasOver=false;
+  var lastFix=0, lastPos=null, hideTimer=null, wasOver=false;
+  var targetKmh=0;     // ultima viteza primita de la GPS (poate sari)
+  var shownKmh=0;      // viteza afisata, se apropie lin de target la fiecare cadru
+  var lastAccuracy=null;
 
-  // ---- afisare ----
+  // ---- afisare: ruleaza la ~30 cadre/secunda, INDIFERENT cat de des vine GPS-ul ----
   function render(){
-    var stale = (Date.now()-lastFix) > 4000;
-    var v = mph ? kmh*0.621371 : kmh;
-    var shown = (lastFix===0||stale) ? "--" : String(Math.round(v));
-    // latimea viewBox creste cu numarul de cifre => cifrele raman mereu la fel de inalte
+    var stale = (Date.now()-lastFix) > 6000;
+
+    // apropiem valoarea afisata de tinta, dar nu instant -> miscare continua, nu salturi
+    var diff = targetKmh - shownKmh;
+    if (Math.abs(diff) < 0.15) shownKmh = targetKmh;
+    else shownKmh += diff * 0.18;
+    if (stale) shownKmh *= 0.96;    // daca semnalul lipseste, coboara lin spre 0, nu ingheata
+
+    var v = mph ? shownKmh*0.621371 : shownKmh;
+    var shown = (lastFix===0) ? "--" : String(Math.round(Math.max(0,v)));
     var n = shown.length;
     var w = 62*n + 18;
     svg.setAttribute("viewBox","0 0 "+w+" 120");
@@ -162,13 +171,16 @@
       if(dt>0.3) v = dist(lastPos.coords,c)/dt*3.6;
     }
     lastPos=p;
+    lastAccuracy = c.accuracy;
     if(v===null) return;
-    if(c.accuracy>60) return;                // fix prea slab, ignoram
-    if(v<2.5) v=0;                           // zgomotul GPS in stationare
-    kmh = v;
+    // NU mai aruncam citirile slabe - le acceptam, dar avertizam vizual pe status.
+    // O citire aruncata complet = exact motivul pentru care numarul disparea si reaparea.
+    if(v<2.0) v=0;                           // zgomotul GPS in stationare
+    targetKmh = v;
     lastFix = Date.now();
-    setStatus("semnal GPS — precizie ±"+Math.round(c.accuracy)+" m", "ok");
-    render();
+    var precise = c.accuracy<=25;
+    setStatus((precise?"semnal GPS bun":"semnal GPS slab")+" — precizie ±"+Math.round(c.accuracy)+" m",
+               precise?"ok":"");
   }
   function onErr(e){
     if(e.code===1){
@@ -255,7 +267,14 @@
     watchId = navigator.geolocation.watchPosition(onPos, onErr, {
       enableHighAccuracy:true, maximumAge:0, timeout:15000
     });
-    setInterval(render, 500);   // marcheaza datele ca invechite daca GPS-ul tace
+    // bucla vizuala ruleaza continuu, indiferent cat de des trimite GPS-ul date noi.
+    // asta e ce face cifra sa se miste lin, nu doar sa sara la fiecare puls GPS.
+    var lastFrame=0;
+    function loop(t){
+      if(!lastFrame || t-lastFrame>=33){ lastFrame=t; render(); }
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
     render();
   });
 
