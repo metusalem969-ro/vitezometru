@@ -128,9 +128,7 @@
 
   var mph=false, mirror=false, limit=0, wakeLock=null, watchId=null;
   var lastFix=0, lastPos=null, hideTimer=null, wasOver=false;
-  var targetKmh=0;     // ultima viteza primita de la GPS (poate sari)
-  var shownKmh=0;      // viteza afisata, se apropie lin de target la fiecare cadru
-  var lastAccuracy=null;
+  var targetKmh=0, shownKmh=0, lastAccuracy=null, lastGapMs=0;
 
   // ---- afisare: ruleaza la ~30 cadre/secunda, INDIFERENT cat de des vine GPS-ul ----
   function render(){
@@ -139,7 +137,7 @@
     // apropiem valoarea afisata de tinta, dar nu instant -> miscare continua, nu salturi
     var diff = targetKmh - shownKmh;
     if (Math.abs(diff) < 0.15) shownKmh = targetKmh;
-    else shownKmh += diff * 0.18;
+    else shownKmh += diff * 0.35;
     if (stale) shownKmh *= 0.96;    // daca semnalul lipseste, coboara lin spre 0, nu ingheata
 
     var v = mph ? shownKmh*0.621371 : shownKmh;
@@ -179,7 +177,10 @@
     targetKmh = v;
     lastFix = Date.now();
     var precise = c.accuracy<=25;
-    setStatus((precise?"semnal GPS bun":"semnal GPS slab")+" — precizie ±"+Math.round(c.accuracy)+" m",
+    var gapMs = lastFix ? (Date.now()-lastFix) : 0;
+    lastGapMs = gapMs>50 ? gapMs : lastGapMs;   // pastram ultimul interval real dintre fixuri
+    setStatus((precise?"semnal GPS bun":"semnal GPS slab")+" — precizie ±"+Math.round(c.accuracy)+
+              " m — actualizări la ~"+Math.round(lastGapMs/1000*10)/10+"s",
                precise?"ok":"");
   }
   function onErr(e){
