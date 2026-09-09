@@ -38,6 +38,8 @@
     color:#5a5a60;min-height:1.6em;text-align:center}
   #status.err{color:#c81e26;font-weight:600}
   #status.ok{color:#1a8a4a}
+  #diag{flex:0 0 auto;padding:0 5vw 6px;font-size:11px;line-height:1.5;color:#9a9aa0;
+    text-align:center;font-family:ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap}
 
   /* numarul: SVG, ca sa fie identic de mare pe orice telefon */
   #readout{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;padding:0 4vw}
@@ -82,6 +84,7 @@
 
 <div id="stage" class="stale">
   <div id="status">se așteaptă pornirea…</div>
+  <div id="diag"></div>
   <div id="readout">
     <svg id="svg" viewBox="0 0 180 120" preserveAspectRatio="xMidYMid meet">
       <text id="num" x="90" y="98" text-anchor="middle">--</text>
@@ -118,7 +121,7 @@
   var stage=document.getElementById("stage"), svg=document.getElementById("svg"),
       num=document.getElementById("num"), unitEl=document.getElementById("unit"),
       limitEl=document.getElementById("limit"), hintEl=document.getElementById("hint"),
-      statusEl=document.getElementById("status"),
+      statusEl=document.getElementById("status"), diagEl=document.getElementById("diag"),
       panel=document.getElementById("panel"), start=document.getElementById("start");
 
   function setStatus(text, kind){
@@ -165,41 +168,43 @@
   var basePos = null, baseTime = 0, lastAcceptTime = 0;
 
   function onPos(p){
-    var c=p.coords, v=null, fromDoppler=false;
+    var c=p.coords, vDoppler=null, vFromPos=null, fromDoppler=false;
 
-    if(c.speed!==null && !isNaN(c.speed) && c.speed>=0){
-      v = c.speed*3.6;                       // telefonul da viteza direct (Doppler) - stabila
-      fromDoppler = true;
-      basePos = p; baseTime = p.timestamp;   // resetam fereastra, nu mai e nevoie de ea
-    } else {
-      // Fallback fara Doppler: la viteza mica, o SINGURA citire noua nu e de ajuns -
-      // zgomotul normal al GPS-ului (8-15m, chiar stationar) e mai mare decat
-      // distanta reala parcursa intr-o secunda la 15-30 km/h. Solutia corecta e
-      // sa acumulam distanta pe o fereastra care creste pana iese clar din zgomot,
-      // apoi calculam viteza pe acel interval - nu pe ultimele 2 puncte brute.
-      if (!basePos) { basePos = p; baseTime = p.timestamp; }
-      else {
-        var dt = (p.timestamp - baseTime) / 1000;
-        var d  = dist(basePos.coords, c);
-        var noiseFloor = (c.accuracy||30) + (basePos.coords.accuracy||30);
-        if (d > noiseFloor * 1.6) {
-          v = d / dt * 3.6;
-          basePos = p; baseTime = p.timestamp;      // fereastra se inchide, pornim una noua
-        } else if (dt > 6) {
-          // 6 secunde fara sa iesim clar din zgomot: calculam oricum, cu ce avem,
-          // ca sa nu ramanem blocati la infinit daca miscarea e foarte lenta
-          v = d / dt * 3.6;
-          basePos = p; baseTime = p.timestamp;
-        }
-        // altfel: asteptam in continuare, v ramane null
+    // 1. Viteza directa de la GPS (Doppler), daca exista si nu e suspect de zero
+    if (c.speed!==null && !isNaN(c.speed) && c.speed>0.3) {
+      vDoppler = c.speed*3.6;
+    }
+
+    // 2. Calculam si din pozitii, mereu, in paralel - ca sa detectam cazul in care
+    // telefonul zice "0" (fix de la Wi-Fi/retea, care nu poate masura viteza)
+    // desi pozitia chiar se schimba. Fara asta, un 0 fals blocheaza afisajul
+    // la nesfarsit, exact ce ai vazut tu, chiar cu precizie buna.
+    if (!basePos) { basePos = p; baseTime = p.timestamp; }
+    else {
+      var dt = (p.timestamp - baseTime) / 1000;
+      var d  = dist(basePos.coords, c);
+      var noiseFloor = (c.accuracy||30) + (basePos.coords.accuracy||30);
+      if (d > noiseFloor * 1.6 || dt > 6) {
+        vFromPos = d / dt * 3.6;
+        basePos = p; baseTime = p.timestamp;
       }
     }
+
+    var v;
+    if (vDoppler !== null) { v = vDoppler; fromDoppler = true; }
+    else if (vFromPos !== null) { v = vFromPos; fromDoppler = false; }
+    else { v = null; }
 
     var gapMs = lastFix ? (Date.now() - lastFix) : 0;
     lastAccuracy = c.accuracy;
     if (usingDoppler === null) usingDoppler = fromDoppler;
 
-    if (v === null) { render(); return; }
+    if (v === null) {
+      diagEl.textContent = "brut: c.speed=" + (c.speed===null?"null":c.speed.toFixed(2)+"m/s") +
+        "  (se acumulează distanța, încă sub pragul de zgomot)";
+      render();
+      return;
+    }
     if (v < 2.0) v = 0;
 
     // resping salturi fizic imposibile fata de ultima valoare ACCEPTATA
@@ -227,6 +232,10 @@
     var src = fromDoppler ? "GPS direct" : "calculată";
     setStatus((precise?"semnal bun":"semnal slab")+" ("+src+") — ±"+Math.round(c.accuracy)+
               "m — la ~"+(Math.round(lastGapMs/100)/10)+"s", precise?"ok":"");
+    diagEl.textContent =
+      "brut: c.speed=" + (c.speed===null?"null":c.speed.toFixed(2)+"m/s") +
+      "  poz.="  + (vFromPos===null?"n/a":vFromPos.toFixed(1)+"km/h") +
+      "  acceptat=" + filtered.toFixed(1) + "km/h";
   }
   function onErr(e){
     if(e.code===1){
