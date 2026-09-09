@@ -319,9 +319,23 @@
       return;
     }
     setStatus("se caută semnal GPS…");
-    watchId = navigator.geolocation.watchPosition(onPos, onErr, {
-      enableHighAccuracy:true, maximumAge:0, timeout:15000
-    });
+
+    // In loc de watchPosition (pe care Android il poate batch-ui la interval fix,
+    // exact ce am masurat: ~7s indiferent de browser), cerem pozitia explicit,
+    // una cate una, recerand imediat ce primim raspuns. Pe unele telefoane
+    // asta ocoleste partial batch-ul de sistem aplicat fluxurilor continue.
+    var pollActive = true;
+    function pollOnce(){
+      if (!pollActive) return;
+      navigator.geolocation.getCurrentPosition(
+        function(p){ onPos(p); if (pollActive) pollOnce(); },
+        function(e){ onErr(e); if (pollActive) setTimeout(pollOnce, 2000); },
+        { enableHighAccuracy:true, maximumAge:0, timeout:8000 }
+      );
+    }
+    pollOnce();
+    watchId = { stop: function(){ pollActive = false; } };
+
     // bucla vizuala ruleaza continuu, indiferent cat de des trimite GPS-ul date noi.
     // asta e ce face cifra sa se miste lin, nu doar sa sara la fiecare puls GPS.
     var lastFrame=0;
