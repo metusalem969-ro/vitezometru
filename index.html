@@ -160,28 +160,73 @@
   }
 
   // ---- GPS ----
+  var speedHistory = [];
+  var usingDoppler = null;
+  var basePos = null, baseTime = 0, lastAcceptTime = 0;
+
   function onPos(p){
-    var c=p.coords, v=null;
+    var c=p.coords, v=null, fromDoppler=false;
+
     if(c.speed!==null && !isNaN(c.speed) && c.speed>=0){
-      v = c.speed*3.6;                       // telefonul ne da viteza direct (Doppler)
-    }else if(lastPos){                       // altfel o calculam din doua pozitii
-      var dt=(p.timestamp-lastPos.timestamp)/1000;
-      if(dt>0.3) v = dist(lastPos.coords,c)/dt*3.6;
+      v = c.speed*3.6;                       // telefonul da viteza direct (Doppler) - stabila
+      fromDoppler = true;
+      basePos = p; baseTime = p.timestamp;   // resetam fereastra, nu mai e nevoie de ea
+    } else {
+      // Fallback fara Doppler: la viteza mica, o SINGURA citire noua nu e de ajuns -
+      // zgomotul normal al GPS-ului (8-15m, chiar stationar) e mai mare decat
+      // distanta reala parcursa intr-o secunda la 15-30 km/h. Solutia corecta e
+      // sa acumulam distanta pe o fereastra care creste pana iese clar din zgomot,
+      // apoi calculam viteza pe acel interval - nu pe ultimele 2 puncte brute.
+      if (!basePos) { basePos = p; baseTime = p.timestamp; }
+      else {
+        var dt = (p.timestamp - baseTime) / 1000;
+        var d  = dist(basePos.coords, c);
+        var noiseFloor = (c.accuracy||30) + (basePos.coords.accuracy||30);
+        if (d > noiseFloor * 1.6) {
+          v = d / dt * 3.6;
+          basePos = p; baseTime = p.timestamp;      // fereastra se inchide, pornim una noua
+        } else if (dt > 6) {
+          // 6 secunde fara sa iesim clar din zgomot: calculam oricum, cu ce avem,
+          // ca sa nu ramanem blocati la infinit daca miscarea e foarte lenta
+          v = d / dt * 3.6;
+          basePos = p; baseTime = p.timestamp;
+        }
+        // altfel: asteptam in continuare, v ramane null
+      }
     }
-    lastPos=p;
+
+    var gapMs = lastFix ? (Date.now() - lastFix) : 0;
     lastAccuracy = c.accuracy;
-    if(v===null) return;
-    // NU mai aruncam citirile slabe - le acceptam, dar avertizam vizual pe status.
-    // O citire aruncata complet = exact motivul pentru care numarul disparea si reaparea.
-    if(v<2.0) v=0;                           // zgomotul GPS in stationare
-    targetKmh = v;
+    if (usingDoppler === null) usingDoppler = fromDoppler;
+
+    if (v === null) { render(); return; }
+    if (v < 2.0) v = 0;
+
+    // resping salturi fizic imposibile fata de ultima valoare ACCEPTATA
+    // (nu fata de ce arata ecranul acum) - o masina nu accelereaza/franeaza
+    // mai mult de ~15 km/h pe secunda in conditii normale de oras
+    var dtSinceAccept = lastAcceptTime ? (p.timestamp - lastAcceptTime) / 1000 : 999;
+    var maxJump = 15 * dtSinceAccept + 10;
+    if (lastAcceptTime && Math.abs(v - targetKmh) > maxJump) {
+      render();
+      return;                                    // ignoram citirea aberanta
+    }
+
+    // filtru median pe ultimele 5 citiri valide: elimina spike-uri izolate ramase
+    speedHistory.push(v);
+    if (speedHistory.length > 5) speedHistory.shift();
+    var sorted = speedHistory.slice().sort(function(a,b){return a-b;});
+    var filtered = sorted[Math.floor(sorted.length/2)];
+
+    targetKmh = filtered;
     lastFix = Date.now();
-    var precise = c.accuracy<=25;
-    var gapMs = lastFix ? (Date.now()-lastFix) : 0;
-    lastGapMs = gapMs>50 ? gapMs : lastGapMs;   // pastram ultimul interval real dintre fixuri
-    setStatus((precise?"semnal GPS bun":"semnal GPS slab")+" — precizie ±"+Math.round(c.accuracy)+
-              " m — actualizări la ~"+Math.round(lastGapMs/1000*10)/10+"s",
-               precise?"ok":"");
+    lastAcceptTime = p.timestamp;
+    if (gapMs > 50) lastGapMs = gapMs;
+
+    var precise = c.accuracy <= 25;
+    var src = fromDoppler ? "GPS direct" : "calculată";
+    setStatus((precise?"semnal bun":"semnal slab")+" ("+src+") — ±"+Math.round(c.accuracy)+
+              "m — la ~"+(Math.round(lastGapMs/100)/10)+"s", precise?"ok":"");
   }
   function onErr(e){
     if(e.code===1){
