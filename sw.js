@@ -1,5 +1,5 @@
 /* Service worker: dupa prima incarcare, pagina merge complet fara internet. */
-const CACHE = "vitezometru-v7";
+const CACHE = "vitezometru-v8";
 const FILES = [
   "./",
   "./index.html",
